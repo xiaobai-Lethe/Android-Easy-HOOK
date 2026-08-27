@@ -4,13 +4,6 @@ project(easy_hook LANGUAGES C CXX)
 
 option(EASY_HOOK_DEBUG_DEFAULT "Enable framework logging by default" ON)
 
-#[[
-2026年08月27日21时54分
-框架自身代码使用严格告警，用户 hook 代码使用宽松告警。
-两者分成不同的目标编译，避免新手在写替换函数时被 -Wconversion 之类的告警劝退，
-同时保证框架本体的质量门槛不被降低。
-2026 BY white
-]]
 add_library(easy_hook_strict_options INTERFACE)
 target_compile_features(easy_hook_strict_options INTERFACE cxx_std_23)
 target_compile_options(easy_hook_strict_options INTERFACE
@@ -37,6 +30,9 @@ set(EASY_HOOK_FRAMEWORK_SOURCES
     src/core/runtime.cpp
     src/core/dynamic_hook.cpp
     src/module/module_lookup.cpp
+    src/art/xz_decompressor.cpp
+    src/art/elf_symbol_table.cpp
+    src/art/art_hook.cpp
     src/pattern/byte_pattern.cpp
     src/locator/symbol_locator.cpp
     src/locator/offset_locator.cpp
@@ -46,29 +42,28 @@ set(EASY_HOOK_FRAMEWORK_SOURCES
     src/runtime/bootstrap.cpp
 )
 
-#[[
-2026年08月27日21时54分
-自动收录 user 目录下的全部 cpp，使用者新增 hook 文件后无需改动本文件。
-CONFIGURE_DEPENDS 让构建系统在文件增删时自动重新配置。
-2026 BY white
-]]
-file(GLOB_RECURSE EASY_HOOK_USER_SOURCES CONFIGURE_DEPENDS
+file(GLOB_RECURSE EASY_HOOK_PLUGIN_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/plugins/*.cpp")
+file(GLOB_RECURSE EASY_HOOK_OWN_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/user/*.cpp")
+set(EASY_HOOK_USER_SOURCES ${EASY_HOOK_PLUGIN_SOURCES} ${EASY_HOOK_OWN_SOURCES})
 if(NOT EASY_HOOK_USER_SOURCES)
-    message(FATAL_ERROR "No hook source found under user/. Add at least one .cpp there.")
+    message(FATAL_ERROR
+        "No hook source found. Add at least one .cpp under user/ or plugins/.")
 endif()
-list(LENGTH EASY_HOOK_USER_SOURCES EASY_HOOK_USER_SOURCE_COUNT)
-message(STATUS "[Easy Hook] collected ${EASY_HOOK_USER_SOURCE_COUNT} user hook source(s)")
+list(LENGTH EASY_HOOK_PLUGIN_SOURCES EASY_HOOK_PLUGIN_SOURCE_COUNT)
+list(LENGTH EASY_HOOK_OWN_SOURCES EASY_HOOK_OWN_SOURCE_COUNT)
+message(STATUS "[Easy Hook] plugins/ ${EASY_HOOK_PLUGIN_SOURCE_COUNT} source(s), "
+               "user/ ${EASY_HOOK_OWN_SOURCE_COUNT} source(s)")
 
 if(ANDROID)
     include(cmake/AndroidToolchainChecks.cmake)
     easy_hook_validate_android_toolchain()
 
     #[[
-    2026年08月27日21时54分
-    Dobby 仅提供 inline hook 与符号解析两项能力。
-    导入表替换插件只在 Darwin 下编译且实现基于 Mach-O，在 Android 上不可用，因此不启用。
-    符号解析插件必须保持开启，框架依赖它解析目标模块中未导出的内部符号。
+    2026年08月28日01时52分
+    ImportTableReplace 不可开启：该插件只在 Darwin 下编译且实现基于 Mach-O，在 Android 上是死代码。
+    SymbolResolver 不可关闭：框架依赖它解析目标模块中未导出的内部符号。
     2026 BY white
     ]]
     set(DOBBY_DEBUG OFF CACHE BOOL "" FORCE)
@@ -79,9 +74,9 @@ if(ANDROID)
     add_subdirectory(dobby EXCLUDE_FROM_ALL)
 
     #[[
-    2026年08月27日22时04分
-    把 Dobby 的头文件目录标记为系统头。dobby.h 使用了命名可变参数宏等 GNU 扩展，
-    在框架自身的严格告警下会持续刷屏，掩盖我们真正需要关注的告警。
+    2026年08月28日01时52分
+    第三方头标记为系统头，否则它们的 GNU 扩展用法会在框架的严格告警下持续刷屏，
+    淹没框架自身的告警。lsplant_static 下方同理。
     2026 BY white
     ]]
     get_target_property(EASY_HOOK_DOBBY_INCLUDES dobby_static INTERFACE_INCLUDE_DIRECTORIES)
@@ -91,20 +86,35 @@ if(ANDROID)
     endif()
 
     #[[
+    2026年08月28日01时52分
+    只编译 LSPlant 与 DexBuilder 的静态变体：它们的 shared 变体带 -flto，
+    开启后会把整条链路拖入 LTO；静态并入还能省去额外的 so 依赖。
+    两者使用 C++20 命名模块，因此构建必须用 Ninja 生成器，Makefile 无法处理模块依赖。
+    2026 BY white
+    ]]
+    set(LSPLANT_BUILD_SHARED OFF CACHE INTERNAL "" FORCE)
+    set(LSPLANT_STANDALONE OFF CACHE INTERNAL "" FORCE)
+    set(DEBUG_SYMBOLS_PATH "${CMAKE_BINARY_DIR}/lsplant-symbols" CACHE INTERNAL "" FORCE)
+    add_subdirectory(
+        third_party/lsplant/lsplant/src/main/jni
+        "${CMAKE_BINARY_DIR}/lsplant"
+        EXCLUDE_FROM_ALL)
+
+    get_target_property(EASY_HOOK_LSPLANT_INCLUDES lsplant_static INTERFACE_INCLUDE_DIRECTORIES)
+    if(EASY_HOOK_LSPLANT_INCLUDES)
+        set_target_properties(lsplant_static PROPERTIES
+            INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${EASY_HOOK_LSPLANT_INCLUDES}")
+    endif()
+
+    #[[
     2026年08月27日21时54分
     用户 hook 编译为 OBJECT 库而不是静态库。
     静态库中未被引用的目标文件会被链接器丢弃，那样每个 hook 的自注册静态对象都不会执行，
     所有 hook 都将静默失效。OBJECT 库的目标文件会被无条件链入，能保证注册一定发生。
     2026 BY white
     ]]
-    #[[
-    2026年08月28日00时02分
-    user 目录本身也加入头文件搜索路径，使用者的多文件功能可以按 "模块/头文件.hpp"
-    的形式相互引用，而不必写相对路径。
-    2026 BY white
-    ]]
     add_library(easy_hook_user_objects OBJECT ${EASY_HOOK_USER_SOURCES})
-    target_include_directories(easy_hook_user_objects PRIVATE include user)
+    target_include_directories(easy_hook_user_objects PRIVATE include plugins user)
     target_link_libraries(easy_hook_user_objects PRIVATE easy_hook_user_options)
 
     add_library(easyhook SHARED ${EASY_HOOK_FRAMEWORK_SOURCES})
@@ -121,7 +131,28 @@ if(ANDROID)
             easy_hook_strict_options
             easy_hook_user_objects
             dobby_static
+            lsplant_static
             log
             dl
     )
+
+    set_target_properties(easyhook easy_hook_user_objects PROPERTIES
+        CXX_SCAN_FOR_MODULES OFF)
+
+    #[[
+    2026年08月28日01时52分
+    独立探针：不注入进程、不改动系统文件，用 adb shell 直接跑，
+    可零风险验证从被裁剪的 libart.so 中解析符号这一最易出问题的环节。
+    2026 BY white
+    ]]
+    add_executable(easyhook_symprobe
+        tools/symprobe/main.cpp
+        src/core/log.cpp
+        src/module/module_lookup.cpp
+        src/art/xz_decompressor.cpp
+        src/art/elf_symbol_table.cpp
+    )
+    target_include_directories(easyhook_symprobe PRIVATE include)
+    target_link_libraries(easyhook_symprobe PRIVATE easy_hook_strict_options log dl)
+    set_target_properties(easyhook_symprobe PROPERTIES CXX_SCAN_FOR_MODULES OFF)
 endif()

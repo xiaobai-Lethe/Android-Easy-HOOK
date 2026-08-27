@@ -1,0 +1,13 @@
+[submodule "dex_builder"]
+	path = lsplant/src/main/jni/external/dex_builder
+	url = https://github.com/LSPosed/DexBuilder.git
+	branch = master
+[submodule "docs/doxygen-awesome-css"]
+	path = docs/doxygen-awesome-css
+	url = https://github.com/jothepro/doxygen-awesome-css.git
+[submodule "test/src/main/jni/external/lsparself"]
+	path = test/src/main/jni/external/lsparself
+	url = git@github.com:LSPosed/lsparself.git
+[submodule "test/src/main/jni/external/lsprism"]
+	path = test/src/main/jni/external/lsprism
+	url = git@github.com:LSPosed/lsprism.git

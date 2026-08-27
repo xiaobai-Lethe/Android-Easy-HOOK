@@ -31,6 +31,11 @@ tools/*.bak
 tools/tombstone*
 tools/*logcat*
 
+# ---- 外部构建工具 ----
+# r8.jar(内含 D8)用于把回调类编译成 dex，是数十 MB 的第三方二进制，
+# 按需自行放置到 tools/ 下即可，不随源码一起管理。
+tools/*.jar
+
 # ---- 运行期日志 ----
 *.log
 
