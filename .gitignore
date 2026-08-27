@@ -1,0 +1,44 @@
+# 2026年08月28日01时02分
+# Easy Hook 版本管理忽略规则。
+# 原则：源码、构建脚本、工具脚本纳入管理；构建产物与设备侧抓取的临时分析文件排除在外。
+# 2026 BY white
+
+# ---- 构建产物 ----
+build/
+build-*/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.so.*
+
+# ---- CMake 生成物 ----
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
+
+# ---- 设备侧抓取的临时分析文件 ----
+# 这些是排查问题时从真机拉取或导出的，体积大且与代码无关，不进版本库。
+tools/*.txt
+tools/*.so
+tools/*.device
+tools/*.bak
+tools/tombstone*
+tools/*logcat*
+
+# ---- 运行期日志 ----
+*.log
+
+# ---- 编辑器与系统文件 ----
+# 只忽略仓库根部的编辑器配置。dobby 是随仓库分发的依赖源码，保持其上游内容完整。
+/.vscode/
+/.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
