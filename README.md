@@ -515,13 +515,6 @@ LSPlant 全部静态并入 `libeasyhook.so`，配合 `-Wl,--exclude-libs,ALL` �
 | 其余进程                | 完全不介入                            |
 
 
-> **仅供参考，不保证通用。** 这份实现是针对特定机型与 ROM 组合调出来的，
-> 依赖小米的厂商 AIDL 接口、`mi_display` 节点路径，以及 Flyme 框架侧的类与字段名。
-> 换机型或换 ROM 版本这些前提都可能不成立。把它当作"如何用本框架做一个复杂功能"的样例，
-> 而不是拿来即用的补丁。`plugins/flyme-FOD-xiaomi/fod_hooks.cpp` 顶部的 `FOD_FIX_ENABLED` 置 0 即可整体停用。
-
-
-
 ### 息屏显示（AOD）修复 · `plugins/flyme-fix-aod/`
 
 Flyme 自带的光学指纹/AOD 框架靠写 `/sys/kernel/display_drivers/ofp_press_status` 等节点点亮，
@@ -542,13 +535,10 @@ Flyme 自带的光学指纹/AOD 框架靠写 `/sys/kernel/display_drivers/ofp_pr
 | `persist.easy_hook.aod_off_value`   | `0`                                               | 熄灭写入值  |
 
 
-> 与 FOD 修复同属"移植 Flyme 到小米"的配套，二者相互独立、可分别开关。
-
 ### ART 方法 hook 演示 · `plugins/art_demo/`
 
 替换系统设置里的一段文案，用来验证 ART hook 通路是否完整。
 它同时是 ART 插件的最小骨架：内嵌回调类 dex、注入目标进程、挂目标方法、按文本命中替换。
-上一节列出的三个坑（回调类分发、进程判定时机、取值路径）都在这份代码里有对应处理。
 
 ### 三种定位方式示例 · `plugins/example_hooks.cpp`
 
