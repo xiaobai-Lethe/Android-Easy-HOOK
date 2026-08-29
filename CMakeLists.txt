@@ -42,19 +42,72 @@ set(EASY_HOOK_FRAMEWORK_SOURCES
     src/runtime/bootstrap.cpp
 )
 
-file(GLOB_RECURSE EASY_HOOK_PLUGIN_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/plugins/*.cpp")
-file(GLOB_RECURSE EASY_HOOK_OWN_SOURCES CONFIGURE_DEPENDS
+file(GLOB_RECURSE EASY_HOOK_USER_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/user/*.cpp")
-set(EASY_HOOK_USER_SOURCES ${EASY_HOOK_PLUGIN_SOURCES} ${EASY_HOOK_OWN_SOURCES})
-if(NOT EASY_HOOK_USER_SOURCES)
-    message(FATAL_ERROR
-        "No hook source found. Add at least one .cpp under user/ or plugins/.")
+
+#[[
+2026年08月29日
+插件管理（menuconfig 风格）：plugins/ 下每个子目录是一个可选插件，默认全部关闭。
+开启方式二选一：
+  1) 交互式(推荐)：运行 tools/plugin_config.ps1（Windows）/ tools/plugin_config.sh（*nix），
+     用 上/下 移动、空格 勾选、回车 保存，结果写入 plugins.config；随后正常运行 cmake 生效。
+  2) 命令行：-DEASY_HOOK_PLUGINS=名字1;名字2  （覆盖 plugins.config，便于 CI）
+名字即 plugins/ 下的文件夹名。plugins.config 每配置一次都会重新读取，改完无需清缓存。
+2026 BY white
+]]
+set(EASY_HOOK_PLUGINS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/plugins")
+set(EASY_HOOK_PLUGIN_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/plugins.config")
+
+set(EASY_HOOK_ENABLED_PLUGINS "")
+if(DEFINED EASY_HOOK_PLUGINS)
+    set(EASY_HOOK_ENABLED_PLUGINS ${EASY_HOOK_PLUGINS})
+elseif(EXISTS "${EASY_HOOK_PLUGIN_CONFIG_FILE}")
+    file(STRINGS "${EASY_HOOK_PLUGIN_CONFIG_FILE}" EASY_HOOK_PLUGIN_CONFIG_LINES)
+    foreach(config_line ${EASY_HOOK_PLUGIN_CONFIG_LINES})
+        string(STRIP "${config_line}" config_line)
+        if(config_line STREQUAL "" OR config_line MATCHES "^#")
+            continue()
+        endif()
+        list(APPEND EASY_HOOK_ENABLED_PLUGINS "${config_line}")
+    endforeach()
 endif()
+
+set(EASY_HOOK_PLUGIN_SOURCES "")
+set(EASY_HOOK_PLUGIN_INCLUDE_NEEDED OFF)
+file(GLOB EASY_HOOK_PLUGIN_ENTRIES RELATIVE "${EASY_HOOK_PLUGINS_DIR}"
+    "${EASY_HOOK_PLUGINS_DIR}/*")
+list(SORT EASY_HOOK_PLUGIN_ENTRIES)
+
+message(STATUS "[Easy Hook] ---- plugins/ 插件清单 ----")
+foreach(plugin_name ${EASY_HOOK_PLUGIN_ENTRIES})
+    set(plugin_path "${EASY_HOOK_PLUGINS_DIR}/${plugin_name}")
+    if(NOT IS_DIRECTORY "${plugin_path}")
+        continue()
+    endif()
+
+    if(plugin_name IN_LIST EASY_HOOK_ENABLED_PLUGINS)
+        file(GLOB_RECURSE plugin_cpp CONFIGURE_DEPENDS "${plugin_path}/*.cpp")
+        list(LENGTH plugin_cpp plugin_cpp_count)
+        list(APPEND EASY_HOOK_PLUGIN_SOURCES ${plugin_cpp})
+        set(EASY_HOOK_PLUGIN_INCLUDE_NEEDED ON)
+        message(STATUS "  [x] ${plugin_name}  (${plugin_cpp_count} 源文件)")
+    else()
+        message(STATUS "  [ ] ${plugin_name}")
+    endif()
+endforeach()
+message(STATUS "[Easy Hook] ---------------------------")
+message(STATUS "[Easy Hook] 改选择：运行 tools/plugin_config.ps1 或 -DEASY_HOOK_PLUGINS=<名字;名字>")
+
+set(EASY_HOOK_HOOK_SOURCES ${EASY_HOOK_USER_SOURCES} ${EASY_HOOK_PLUGIN_SOURCES})
+if(NOT EASY_HOOK_HOOK_SOURCES)
+    message(FATAL_ERROR
+        "No hook source found. Add a .cpp under user/, "
+        "run tools/plugin_config.ps1, or set -DEASY_HOOK_PLUGINS=<name>.")
+endif()
+list(LENGTH EASY_HOOK_USER_SOURCES EASY_HOOK_USER_SOURCE_COUNT)
 list(LENGTH EASY_HOOK_PLUGIN_SOURCES EASY_HOOK_PLUGIN_SOURCE_COUNT)
-list(LENGTH EASY_HOOK_OWN_SOURCES EASY_HOOK_OWN_SOURCE_COUNT)
-message(STATUS "[Easy Hook] plugins/ ${EASY_HOOK_PLUGIN_SOURCE_COUNT} source(s), "
-               "user/ ${EASY_HOOK_OWN_SOURCE_COUNT} source(s)")
+message(STATUS "[Easy Hook] user/ ${EASY_HOOK_USER_SOURCE_COUNT} source(s), "
+               "enabled plugins ${EASY_HOOK_PLUGIN_SOURCE_COUNT} source(s)")
 
 if(ANDROID)
     include(cmake/AndroidToolchainChecks.cmake)
@@ -113,8 +166,17 @@ if(ANDROID)
     所有 hook 都将静默失效。OBJECT 库的目标文件会被无条件链入，能保证注册一定发生。
     2026 BY white
     ]]
-    add_library(easy_hook_user_objects OBJECT ${EASY_HOOK_USER_SOURCES})
-    target_include_directories(easy_hook_user_objects PRIVATE include plugins user)
+    add_library(easy_hook_user_objects OBJECT ${EASY_HOOK_HOOK_SOURCES})
+    target_include_directories(easy_hook_user_objects PRIVATE include user)
+    if(EASY_HOOK_PLUGIN_INCLUDE_NEEDED)
+        #[[
+        2026年08月29日
+        仅当启用了插件才把 plugins/ 加进头文件搜索路径：插件内部按
+        “插件文件夹名/模块/头文件.hpp” 互相引用，需要以 plugins/ 为根。
+        2026 BY white
+        ]]
+        target_include_directories(easy_hook_user_objects PRIVATE plugins)
+    endif()
     target_link_libraries(easy_hook_user_objects PRIVATE easy_hook_user_options)
 
     add_library(easyhook SHARED ${EASY_HOOK_FRAMEWORK_SOURCES})
@@ -139,12 +201,6 @@ if(ANDROID)
     set_target_properties(easyhook easy_hook_user_objects PROPERTIES
         CXX_SCAN_FOR_MODULES OFF)
 
-    #[[
-    2026年08月28日01时52分
-    独立探针：不注入进程、不改动系统文件，用 adb shell 直接跑，
-    可零风险验证从被裁剪的 libart.so 中解析符号这一最易出问题的环节。
-    2026 BY white
-    ]]
     add_executable(easyhook_symprobe
         tools/symprobe/main.cpp
         src/core/log.cpp

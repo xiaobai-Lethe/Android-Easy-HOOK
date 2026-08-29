@@ -13,6 +13,7 @@
 
 [功能支持](#功能支持情况) ·
 [快速开始](#快速开始) ·
+[插件编写与配置](#插件编写与配置) ·
 [三种定位方式](#三种定位方式) ·
 [ART hook](#artjava-方法hook) ·
 [内置插件](#内置插件) ·
@@ -81,6 +82,69 @@ ROM 预置、Zygisk 模块、手动 `dlopen` 都可以，框架不绑定任何�
 
 宏的参数顺序固定为 `(名字, 目标定位..., 返回类型, 参数列表...)`。
 第一个参数是你给这个 hook 起的名字，只用于日志和状态查询，随便起，不要重复即可。
+
+## 插件编写与配置
+
+框架把 hook 源码分成两处，都会被自动收录、都在头文件搜索路径里，区别只在职责：
+
+- **`user/`**：你自己的插件，**默认全部参与编译**。在这里新建任意 `.cpp` 即可，不用改 `CMakeLists.txt`。
+- **`plugins/`**：随框架分发的成品/参考插件，**默认全部不编译**，按需开启。
+
+### 写自己的插件（`user/`）
+
+最小的插件只要一个文件：
+
+```cpp
+#include "easy_hook/easy_hook.hpp"
+
+EASY_HOOK_SYMBOL(MyHook, "libc.so", "atoi", int, const char* text) {
+    EASY_LOG("atoi(%s)", text != nullptr ? text : "<null>");
+    return EASY_ORIGINAL(text);
+}
+```
+
+功能变复杂后可以自行分目录，`user/` 在头文件搜索路径中，可按 `模块/头文件.hpp` 引用自己的文件，不必写相对路径：
+
+```text
+user/
+└── my_plugin/
+    ├── my_plugin.cpp
+    └── core/
+        ├── worker.hpp
+        └── worker.cpp
+```
+
+```cpp
+#include "my_plugin/core/worker.hpp"
+```
+
+### 开关内置插件（`plugins/`）
+
+`plugins/` 下每个子目录是一个可选插件，构建时会自动列出。用 menuconfig 风格的交互脚本勾选：
+
+```powershell
+pwsh tools/plugin_config.ps1     # Windows：↑/↓ 移动、空格 勾选、回车 保存
+```
+
+```bash
+tools/plugin_config.sh           # Linux / macOS
+```
+
+选择结果写入根目录的 `plugins.config`（每行一个插件文件夹名，`#` 开头为注释），
+CMake 配置时自动读取，改完直接重新构建即可。CI 里也可以不用脚本，直接覆盖：
+
+```bash
+cmake -DEASY_HOOK_PLUGINS="flyme-FOD-xiaomi;flyme-fix-aod" ...
+```
+
+启用后该插件与 `user/` 一起编译，`plugins/` 会加入头文件搜索路径，插件内部按
+`插件文件夹名/模块/头文件.hpp` 互相引用。构建要求 `user/` 与已启用插件合计至少有一个 `.cpp`。
+
+> [!WARNING]
+> `EASY_HOOK_ONLY_IN` 是**整个 `.so` 级别**的进程白名单：只要在任意一个被编译的 cpp 里声明，
+> 就会把**所有**插件的 hook 都限制到这些进程。写只针对某进程的插件时，优先用"hook 一个只在该
+> 进程加载的模块符号"来天然限定（例如 `flyme-fix-aod` 挂 `libandroid_servers.so` 的 `JNI_OnLoad`），
+> 不要随手加 `EASY_HOOK_ONLY_IN`，否则会误伤其他插件——曾因此让 FOD 在 app_process 里整体失效。
 
 ## 三种定位方式
 
@@ -357,20 +421,22 @@ main/
 │   ├── art/                ART 方法 hook：libart 符号表、XZ 解压、LSPlant 门面
 │   └── loader/             模块加载监听
 ├── src/                    与 include 一一对应的实现
-├── plugins/                随框架分发的参考插件
-│   ├── fod/                小米 + Flyme 屏下指纹修复
+├── plugins/                随框架分发的成品/参考插件，默认不编译，按需开关
+│   ├── flyme-FOD-xiaomi/   小米 + Flyme 屏下指纹修复
+│   ├── flyme-fix-aod/      小米 + Flyme 息屏显示（AOD）修复
 │   ├── art_demo/           ART 方法 hook 演示
 │   └── example_hooks.cpp   三种定位方式的最小示例
-├── user/                   你写自己插件的地方，初始为空
+├── user/                   你写自己插件的地方，默认全部编译
+├── plugins.config          启用哪些内置插件（由 tools/plugin_config 生成）
 ├── dobby/                  上游 Dobby 依赖（原生 inline hook）
 ├── third_party/lsplant/    上游 LSPlant 依赖（ART 方法 hook）
-├── tools/                  回调类 dex 生成脚本、libart 符号解析探针
+├── tools/                  插件选择器、回调类 dex 生成脚本、libart 符号解析探针
 └── scripts/                构建脚本
 ```
 
-`plugins/` 与 `user/` 都会被自动收录并加入头文件搜索路径，两者的区别只在职责：
-前者是可以照抄的参考实现，后者是你自己的东西。不需要参考插件时整个删掉即可，
-构建只要求两处合计至少有一个 `.cpp`。
+`user/` 默认全部参与编译，`plugins/` 默认不编译、按需在 `plugins.config` 里开启（见
+[插件编写与配置](#插件编写与配置)）。启用的插件与 `user/` 一起收录并加入头文件搜索路径，
+构建只要求两者合计至少有一个 `.cpp`。
 
 ### 关键设计
 
@@ -428,9 +494,15 @@ LSPlant 全部静态并入 `libeasyhook.so`，配合 `-Wl,--exclude-libs,ALL` �
 
 ## 内置插件
 
-`plugins/` 下是随框架分发的参考实现，可以照着写，用不上就整个删掉。
+`plugins/` 下是随框架分发的成品/参考实现，默认不编译，按需用[上面的方式](#开关内置插件plugins)开启。
 
-### 小米 + Flyme 屏下指纹修复 · `plugins/fod/`
+### 已完成功能清单
+
+- [x] **屏下指纹修复（FOD）** · `plugins/flyme-FOD-xiaomi/` —— 让 Flyme 在小米硬件上正确驱动屏下指纹的按下/抬起/点亮
+- [x] **息屏显示修复（AOD）** · `plugins/flyme-fix-aod/` —— 移植 ROM 上按系统属性检测 AOD，桥接到小米 doze 节点点亮
+- [x] **ART 方法 hook 演示** · `plugins/art_demo/` —— 替换系统设置文案，验证 ART（Java 方法）hook 通路
+
+### 小米 + Flyme 屏下指纹修复 · `plugins/flyme-FOD-xiaomi/`
 
 让 Flyme 在小米硬件上正确驱动屏下指纹。修复分两端协作：JNI 反射负责判断"何时该亮"
 并修正传感器类型、位置与调度器状态，小米 AIDL 与 mi_display 节点负责实际点亮。
@@ -446,9 +518,31 @@ LSPlant 全部静态并入 `libeasyhook.so`，配合 `-Wl,--exclude-libs,ALL` �
 > **仅供参考，不保证通用。** 这份实现是针对特定机型与 ROM 组合调出来的，
 > 依赖小米的厂商 AIDL 接口、`mi_display` 节点路径，以及 Flyme 框架侧的类与字段名。
 > 换机型或换 ROM 版本这些前提都可能不成立。把它当作"如何用本框架做一个复杂功能"的样例，
-> 而不是拿来即用的补丁。`plugins/fod/fod_hooks.cpp` 顶部的 `FOD_FIX_ENABLED` 置 0 即可整体停用。
+> 而不是拿来即用的补丁。`plugins/flyme-FOD-xiaomi/fod_hooks.cpp` 顶部的 `FOD_FIX_ENABLED` 置 0 即可整体停用。
 
 
+
+### 息屏显示（AOD）修复 · `plugins/flyme-fix-aod/`
+
+Flyme 自带的光学指纹/AOD 框架靠写 `/sys/kernel/display_drivers/ofp_press_status` 等节点点亮，
+这些节点在小米硬件上并不存在。本插件不依赖它们，改为**纯系统属性**检测 AOD
+（`persist.sys.meizu.aod` + `debug.tracing.screen_state`），在息屏进入 doze 时把点亮状态
+写到小米真实节点（默认 `mi_display` 的 `doze_brightness`，可用属性覆盖）。
+
+- **只在 `system_server` 生效**：挂 `libandroid_servers.so` 的 `JNI_OnLoad` 拿到进程入口，纯 native 线程，不用 JNI 反射、不依赖 Binder。
+- **事件驱动**：`__system_property_wait` 阻塞等屏幕状态变化，几乎无延迟、不空转。
+- **进 doze 后高频补写一小段**：避免面板未就绪导致首写不生效、要等下一次补写才亮。
+
+
+| 系统属性                                | 默认                                                | 作用     |
+| ----------------------------------- | ------------------------------------------------- | ------ |
+| `persist.easy_hook.aod_fix_enabled` | `1`                                               | 总开关    |
+| `persist.easy_hook.aod_node`        | `/sys/class/mi_display/disp-DSI-0/doze_brightness` | 目标节点   |
+| `persist.easy_hook.aod_on_value`    | `1`                                               | 点亮写入值  |
+| `persist.easy_hook.aod_off_value`   | `0`                                               | 熄灭写入值  |
+
+
+> 与 FOD 修复同属"移植 Flyme 到小米"的配套，二者相互独立、可分别开关。
 
 ### ART 方法 hook 演示 · `plugins/art_demo/`
 
